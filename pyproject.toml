@@ -1,0 +1,23 @@
+[project]
+name = "mabench"
+version = "0.1.0"
+description = "Diagnosing and improving multi-agent coding teams under a fixed token budget"
+requires-python = ">=3.10"
+dependencies = ["langgraph>=0.3,<0.4", "pandas>=2.2", "pyarrow>=15", "scipy>=1.13", "matplotlib>=3.9"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+eval = ["swebench"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["mabench"]
+
+[tool.setuptools.package-data]
+mabench = ["demo.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

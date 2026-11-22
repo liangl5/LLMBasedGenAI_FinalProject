@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Budget Demo</title>
+<style>
+:root { --bg:#f6f6f3; --surface:#fcfcfb; --ink:#0b0b0b; --muted:#52514e; --line:#dddcd6; --accent:#2a78d6; --ok:#006b00; --bad:#b42323; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111110; --surface:#1a1a19; --ink:#f0efec; --muted:#c3c2b7; --line:#34332f; --accent:#3987e5; --ok:#4cc44c; --bad:#ff8a8a; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui, sans-serif; }
+header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:14px 16px; border-bottom:1px solid var(--line); background:var(--surface); }
+h1 { font-size:17px; margin:0 auto 0 0; }
+select, button { font:inherit; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:6px; padding:6px 10px; max-width:100%; }
+button { cursor:pointer; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+main { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; padding:12px 16px; }
+section { background:var(--surface); border:1px solid var(--line); border-radius:8px; display:flex; flex-direction:column; height:calc(100vh - 92px); min-height:380px; min-width:0; }
+.head { padding:12px; border-bottom:1px solid var(--line); }
+h2 { font-size:15px; margin:0 0 6px; text-transform:capitalize; }
+.stats { color:var(--muted); font-variant-numeric:tabular-nums; }
+.meter { height:6px; border-radius:3px; background:var(--line); margin:8px 0; overflow:hidden; }
+.meter div { height:100%; width:0; background:var(--accent); transition:width .2s; }
+.status.ok { color:var(--ok); } .status.bad { color:var(--bad); }
+ol { list-style:none; margin:0; padding:6px 12px; overflow:auto; flex:1; }
+li { padding:6px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
+.role { font-weight:600; } .detail { color:var(--muted); white-space:pre-wrap; font-size:12.5px; }
+.empty { color:var(--muted); padding:24px 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Same bug, same token budget</h1>
+  <label>Run <select id="run"></select></label>
+  <button id="replay">Replay</button>
+</header>
+<main id="board"><p class="empty">Loading runs…</p></main>
+<script>
+const board = document.getElementById("board"), picker = document.getElementById("run");
+let runs = [], limit = null, timer = null, panels = {};
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+const key = r => `${r.instance} @ ${Number(r.budget).toLocaleString()} tokens`;
+
+function describe(e) {
+  if (e.kind === "tool") return [`${e.tool}${e.ok ? "" : " (failed)"}`, Object.values(e.args || {}).join(" · ").slice(0, 180)];
+  if (e.kind === "handoff") return ["handoff", (e.content || "").slice(0, 300)];
+  if (e.kind === "finish") return ["finished turn" + (e.role === "tester" ? (e.passed ? ": tests passed" : ": tests failed") : ""), (e.summary || "").slice(0, 200)];
+  if (e.kind === "compaction") return ["compacted context", `${e.before_chars} chars before`];
+  if (e.kind === "end") return ["run ended", `${e.stop}, ${e.tokens} tokens`];
+  return null;
+}
+
+function build() {
+  board.replaceChildren(); panels = {};
+  const [instance, budget] = picker.value.split("|");
+  for (const r of runs.filter(x => x.instance === instance && x.budget === budget)) {
+    const s = el("section"), head = el("div", "head"), stats = el("div", "stats", "Waiting…"), meter = el("div", "meter"), bar = el("div"), status = el("div", "status"), list = el("ol");
+    meter.setAttribute("role", "progressbar"); meter.setAttribute("aria-label", `${r.system} token use`); meter.setAttribute("aria-valuemin", "0"); meter.setAttribute("aria-valuemax", "100");
+    meter.append(bar); head.append(el("h2", "", r.system), stats, meter, status); s.append(head, list); board.append(s);
+    panels[r.system] = { run: r, stats, meter, bar, status, list, shown: 0 };
+  }
+}
+
+function render(p, events) {
+  const visible = limit === null ? events : events.slice(0, limit);
+  if (visible.length < p.shown) { p.list.replaceChildren(); p.shown = 0; }
+  for (const e of visible.slice(p.shown)) {
+    const d = describe(e); if (!d) continue;
+    const li = el("li"); li.append(el("span", "role", `${e.role}: `), el("span", "", d[0]));
+    if (d[1]) li.append(el("div", "detail", d[1]));
+    p.list.append(li); p.list.scrollTop = p.list.scrollHeight;
+  }
+  p.shown = visible.length;
+  const use = [...visible].reverse().find(e => e.kind === "llm_response"), end = visible.find(e => e.kind === "end");
+  if (use) {
+    const pct = Math.min(100, 100 * use.used / use.budget);
+    p.stats.textContent = `${use.used.toLocaleString()} / ${use.budget.toLocaleString()} tokens`;
+    p.bar.style.width = pct + "%"; p.meter.setAttribute("aria-valuenow", Math.round(pct));
+  } else { p.stats.textContent = "Waiting…"; p.bar.style.width = "0"; }
+  p.status.textContent = end ? `Stopped: ${end.stop}` : "Running";
+  p.status.className = "status " + (end ? (end.stop === "finished" ? "ok" : "bad") : "");
+  return events.length;
+}
+
+async function tick() {
+  let longest = 0;
+  await Promise.all(Object.values(panels).map(async p => {
+    const q = new URLSearchParams(p.run);
+    const res = await fetch("/api/trace?" + q);
+    if (res.ok) longest = Math.max(longest, render(p, await res.json()));
+  }));
+  if (limit !== null) { limit += 1; if (limit > longest) limit = null; }
+  timer = setTimeout(tick, limit === null ? 1000 : 350);
+}
+
+async function loadRuns() {
+  runs = await (await fetch("/api/runs")).json();
+  const seen = new Set(); picker.replaceChildren();
+  for (const r of runs) {
+    const v = `${r.instance}|${r.budget}`;
+    if (!seen.has(v)) { seen.add(v); const o = el("option", "", key(r)); o.value = v; picker.append(o); }
+  }
+  if (!runs.length) { board.replaceChildren(el("p", "empty", "No runs found. Start the demo with --sample or point it at a results folder.")); return; }
+  build(); tick();
+}
+picker.onchange = () => { clearTimeout(timer); limit = null; build(); tick(); };
+document.getElementById("replay").onclick = () => { clearTimeout(timer); limit = 1; Object.values(panels).forEach(p => { p.list.replaceChildren(); p.shown = 0; }); tick(); };
+loadRuns().catch(() => board.replaceChildren(el("p", "empty", "Could not reach the demo server.")));
+</script>
+</body>
+</html>
